@@ -13,9 +13,20 @@ import sys
 from itertools import cycle
 import can
 import os
+import threading
 
 bustype = 'socketcan'
 channel = 'vcan0'
+
+def periodicData(id, current_anchor_random_number):
+    print("Starting to send a message every 200ms for 2s")
+    bus = can.interface.Bus(channel=channel, bustype=bustype)
+    msg = can.Message(arbitration_id = 0x123, data=current_anchor_random_number, is_extended_id=False)
+    task = bus.send_periodic(msg, 0.20)
+    assert isinstance(task, can.CyclicSendTaskABC)
+    time.sleep(2)
+    task.stop()
+    print("Stopped cyclic send")
 
 def sendData(id, ciphertext):
     bus = can.interface.Bus(channel=channel, bustype=bustype)
@@ -134,29 +145,39 @@ def verifyHanchorCanData(current_anchor_random_number, ciphertext, can_id_key, c
     mt.get_merkle_root()
     return message
 
-current_anchor_random_number = get_random_bytes(64)
-can_id_counter = get_random_bytes(1)
-can_id_key = b'thisisjustakeythisisjustakeeyID1'
+def main(current_anchor_random_number):
+    can_id_counter = get_random_bytes(1)
+    can_id_key = b'thisisjustakeythisisjustakeeyID1'
 
-message = ' '.join(sys.argv[1][i:i+2] for i in range(0,len(sys.argv[1]),2))
-#message = "69081F67FE5C6B36"
-message_bytes = bytes.fromhex(message)
-ciphertext = generateHanchorCanData(current_anchor_random_number, message_bytes, can_id_key, can_id_counter)
+    message = ' '.join(sys.argv[1][i:i+2] for i in range(0,len(sys.argv[1]),2))
+    #message = "69081F67FE5C6B36"
+    message_bytes = bytes.fromhex(message)
+    ciphertext = generateHanchorCanData(current_anchor_random_number, message_bytes, can_id_key, can_id_counter)
 
-#Broadcasting hanchorCAN data
-#To-do:
-    #Define broadcast ID
-    #Define broadcast ID_{B}
-    #Define broadcast ID_{A}
-sendData(10, ciphertext)
+    #Broadcasting hanchorCAN data
+    #To-do:
+        #Define range ID for the ECUs
+    sendData(10, ciphertext)
 
-#Writing the encrypted bytes on an external file.
-with open("temp.txt", "wb") as f:
-    f.write(ciphertext)
+    #Writing the encrypted bytes on an external file.
+    with open("temp.txt", "wb") as f:
+        f.write(ciphertext)
 
 
 #message_1 = verifyHanchorCanData(current_anchor_random_number, ciphertext, can_id_key, can_id_counter)
         #print("message: " + str("".join("\\x%02x" % i for i in message))) # display bytes
 
 
+try:
+    current_anchor_random_number = get_random_bytes(64)
+    thread_1 = threading.Thread(target=main, args=(current_anchor_random_number,))
+    thread_2 = threading.Thread(target=periodicData, args=(69, current_anchor_random_number,))
+
+    thread_1.start()
+    thread_2.start()
+except:
+    print("Error: unable to start thread")
+
+while 1:
+    pass
 
