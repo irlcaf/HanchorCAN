@@ -13,32 +13,64 @@ import sys
 from itertools import cycle
 import can
 import os
-import threading
+import threadin
+import random
 
 bustype = 'socketcan'
 channel = 'vcan0'
 
 def periodicData(id, current_anchor_random_number):
-    print("Starting to send a message every 200ms for 2s")
+    message = ' '.join(current_anchor_random_number[i:i+2] for i in range(0,len(current_anchor_random_number),2))
+    message_bytes = bytes.fromhex(message)
+
+    #print("Starting to send a message every 200ms for 2s")
     bus = can.interface.Bus(channel=channel, bustype=bustype)
-    msg = can.Message(arbitration_id = 0x123, data=current_anchor_random_number, is_extended_id=False)
+    #IDb for broadcast
+    msg = can.Message(arbitration_id = id, data=message_bytes, is_extended_id=False)
     task = bus.send_periodic(msg, 0.20)
     assert isinstance(task, can.CyclicSendTaskABC)
-    time.sleep(2)
     task.stop()
-    print("Stopped cyclic send")
+    time.sleep(2)
 
 def sendData(id, ciphertext):
     bus = can.interface.Bus(channel=channel, bustype=bustype)
 
-    #reading the encrypted bytes from the file to send through the bus.
-    with open("tempx.txt", 'rb') as f:
-        data = f.read()
-    #Send data
-    os.remove("temp.txt")
-    msg = can.Message(arbitration_id=0xc0ffee, data=ciphertext,is_extended_id=False)
+    message = ' '.join(ciphertext[i:i+2] for i in range(0,len(ciphertext),2))
+    ciphertext_bytes = bytes.fromhex(message)
+
+    msg = can.Message(arbitration_id=id, data=ciphertext_bytes,is_extended_id=False)
     bus.send(msg)
     #time.sleep(1)
+
+def generateRandomHanchorCanData(id, current_anchor_random_number):
+    bus = can.interface.Bus(channel=channel, bustype=bustype)
+    can_id_counter = get_random_bytes(1)
+    can_id_key = b'thisisjustakeythisisjustakeeyID1'
+
+    length_data = random.randint(0,8)
+    random_data = get_random_bytes(length_data)
+
+    ciphertext = generateHanchorCanData(current_anchor_random_number, random_data, can_id_key, can_id_counter)
+    ciphertext = sendData()
+    msg = can.Message(arbitration_id=id, data=ciphertext,is_extended_id=False)
+    task = bus.send_periodic(msg, 0.0)
+    assert isinstance(task, can.CyclicSendTaskABC)
+    time.sleep(0.1)
+
+def receiveData(id):
+    bus = can.interface.Bus(channel=channel, bustype=bustype)
+    #Receiving data through the CAN bus
+    message = bus.recv()
+
+    #Arbitration IDs that this ECU will filter.
+    #Broadcast IDb 0x2aa
+    IDs = [0x2aa]
+    if(message.arbitration_id in IDs):
+        print("Hello daddy")
+
+    #print("This is the message being read:%s", hex(message.arbitration_id)  ) 
+    return message
+
 
 mt = MerkleTools()
 
@@ -61,9 +93,7 @@ def generateHanchorCan(current_anchor_random_number, message, can_id_key, can_id
     )
     kdf_output = kdf.derive(can_id_key)
     hash_digest = sha256(kdf_output+can_id_counter).hexdigest().encode()
-    #Authentication
 
-    #Encryption
     length = len(message)#+len(can_id_counter)
     hash_digest = hash_digest[:length]
 
@@ -140,41 +170,46 @@ def verifyHanchorCanData(current_anchor_random_number, ciphertext, can_id_key, c
 
     data_frame = xor(ciphertext, hash_digest)
     message = data_frame[:7]
-    counter = data_frame[7:8]
+    #counter = data_frame[7:8]
 
     mt.get_merkle_root()
     return message
 
-def main(current_anchor_random_number):
-    can_id_counter = get_random_bytes(1)
-    can_id_key = b'thisisjustakeythisisjustakeeyID1'
 
-    message = ' '.join(sys.argv[1][i:i+2] for i in range(0,len(sys.argv[1]),2))
-    #message = "69081F67FE5C6B36"
-    message_bytes = bytes.fromhex(message)
-    ciphertext = generateHanchorCanData(current_anchor_random_number, message_bytes, can_id_key, can_id_counter)
-
-    #Broadcasting hanchorCAN data
-    #To-do:
-        #Define range ID for the ECUs
-    sendData(10, ciphertext)
-
-    #Writing the encrypted bytes on an external file.
-    with open("temp.txt", "wb") as f:
-        f.write(ciphertext)
-
+def main1(id, current_anchor_random_number):
+    #Generating periodic broadcast of random number using IDb
+    print("Im here about to send data.")
+    while(True):
+        #Define the start of the frame
+        print("Sending periodic messages for ")
+        sendData(id,"0000000000000000")
+        periodicData(id, current_anchor_random_number)
+        sendData(id, "1111111111111111")
+def main(id, current_anchor_random_number):
+    #Generating random hanchor CAN data
+    while(True):
+        generateRandomHanchorCanData(IDb, current_anchor_random_number)
 
 #message_1 = verifyHanchorCanData(current_anchor_random_number, ciphertext, can_id_key, can_id_counter)
         #print("message: " + str("".join("\\x%02x" % i for i in message))) # display bytes
 
 
 try:
-    current_anchor_random_number = get_random_bytes(64)
-    thread_1 = threading.Thread(target=main, args=(current_anchor_random_number,))
-    thread_2 = threading.Thread(target=periodicData, args=(69, current_anchor_random_number,))
+    current_anchor_random_number = get_random_bytes(8)
+    #Define IDb for broadcasting Data:
+        #IDB = 0xaaaaaa
+        #IDa = 0xaaaaab
+    IDb = 0xaaaaaa
+    IDa = 0xaaaaab
+
+    thread_1 = threading.Thread(target=main, args=(IDa,current_anchor_random_number,))
+    thread_2 = threading.Thread(target=main1, args=(IDb, current_anchor_random_number.hex(),))
 
     thread_1.start()
     thread_2.start()
+
+        #So it's watchable on the screen.
+
 except:
     print("Error: unable to start thread")
 
