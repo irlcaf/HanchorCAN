@@ -8,6 +8,7 @@ from Crypto.Random import get_random_bytes
 from Crypto.Random.random import getrandbits
 from hashlib import sha256
 from merkletools import MerkleTools
+from multiprocessing.pool import ThreadPool
 import time
 import sys
 from itertools import cycle
@@ -101,18 +102,14 @@ def sendData(id, ciphertext):
     """
     bus = can.interface.Bus(channel=channel, bustype=bustype)
     message = can.Message(arbitration_id=id, data=ciphertext, is_extended_id=False)
-    
-    IDs = ["0x2aa"]
 
-    #print(hex(message.arbitration_id) in IDs)
-    if(hex(message.arbitration_id) in IDs):
-        #Should be the periodic verified anchor number instead of the 303030303030
-        if (message.data.hex() == "3030303030303030"):
-            print("Merkle tree root hash, sending: %s",mt_sending.get_merkle_root())
-            mt_sending.reset_tree()
-        else:
-            mt_sending.add_leaf(message.data.hex())
-            mt_sending.make_tree()
+    if (hex(message.arbitration_id) == "0x3ab"):
+        mt_sending.make_tree()
+        mt_s = mt_sending.get_merkle_root()
+        mt_sending.reset_tree()
+        print("Merkle tree root hash, sending from %s: %s" %(hex(id), mt_s))
+    else:
+        mt_sending.add_leaf(message.data.hex())
 
     bus.send(message)
     time.sleep(1)
@@ -124,60 +121,55 @@ def randomData(id, current_anchor_random_number):
         - ** current_anchor_random_number ** *bit_string* : current anchor random number that was being broadcasted through the bus
     """
     while(True):
+        can_id_counter = get_random_bytes(1)
+        can_id_key = b'thisisjustakeythisisjustakeeyID1'
+        
+        #Provides anchor and separation to calculate the hash
+        #Try broadcasting a random number that will provide freshness and will make
+        #the scheme CPA secure.
         initial_data = "00000000"
-        sendData(id,bytes(initial_data.encode()))
+        ciphertext = encryption(current_anchor_random_number, bytes(initial_data.encode()), can_id_key, can_id_counter)
+        sendData(0x3ab,bytes(initial_data.encode()))
+        
         for i in range(0,10):
-            can_id_counter = get_random_bytes(1)
-            can_id_key = b'thisisjustakeythisisjustakeeyID1'
-
             length_data = random.randint(0,8)
             random_data = get_random_bytes(length_data)
             #print("Unencrypted message from ECU_ is: %s", random_data.hex())
             ciphertext = encryption(current_anchor_random_number, random_data, can_id_key, can_id_counter)
             #ciphertext = sendData()
-
             sendData(id, ciphertext)
 
-def receiveData(id, current_anchor_random_number):
-    """
-        Receives all the data that is going through the bus.ID is used to distinguish what messages we want to pull out.
-        - ** id ** *bytes* : ID key identifying the message pulling from the bus.
-    """
+def merkleMonitor(id):
     bus = can.interface.Bus(channel=channel, bustype=bustype)
+    for message in bus:
+        #If the broadcast number is detected, calculate all the root hashes.
+        if(hex(message.arbitration_id) == "0x2ab"):
+            mt_receiving.make_tree()
+            mt_r = mt_receiving.get_merkle_root()
+            mt_receiving.reset_tree()
+            print("Merkle tree root hash, receiving from %s: %s" %(hex(id), mt_r))
+        elif(hex(message.arbitration_id) == hex(id)):
+            mt_receiving.add_leaf(message.data.hex())
 
-    IDs = ["0x2aa"]
-    can_id_counter = get_random_bytes(1)
-    can_id_key = b'thisisjustakeythisisjustakeeyID1'
-
-    for message in bus: 
-        #Should be the periodic verified anchor number instead of the 303030303030
-        if(hex(message.arbitration_id) in IDs):  
-            if(message.data.hex() == "3030303030303030"):
-                print("Merkle tree root hash, receiving: %s",mt_receiving.get_merkle_root())
-                mt_receiving.reset_tree()
-            else:
-                #print("Message from the interface: ",message.data.hex())
-                mt_receiving.add_leaf(message.data.hex())
-                mt_receiving.make_tree()  
-                message = decryption(current_anchor_random_number, message.data,can_id_key, can_id_counter)
-                print("Decrypted message from broadcastECU is %s", message.hex())
-    return 0
 
 try:
-        current_anchor_random_number = get_random_bytes(8)
-        current_anchor_random_number = b'\xfd\xf2\xcdQO\x1b\xa6\x06'
-        IDa = 0x3aa
-        IDb = 0x3ab
+    current_anchor_random_number = get_random_bytes(8)
+    current_anchor_random_number = b'\xfd\xf2\xcdQO\x1b\xa6\x06'
+    IDa = 0x3aa
+    IDb = 0x3ab
+    IDc = 0x2aa
 
-        thread_1 = threading.Thread(target=randomData, args=(IDa, current_anchor_random_number,))
-        #thread_2 = threading.Thread(target=periodicBroadcast, args=(IDb, current_anchor_random_number,))
-        thread_3 = threading.Thread(target=receiveData, args=(IDa, current_anchor_random_number,))
+    thread_1 = threading.Thread(target=randomData, args=(IDa, current_anchor_random_number,))
+            #thread_2 = threading.Thread(target=periodicBroadcast, args=(IDb, current_anchor_random_number,))
+            #thread_3 = threading.Thread(target=receiveData, args=(IDa, current_anchor_random_number,))
+    thread_4 = threading.Thread(target=merkleMonitor, args=(IDc,))
         
-        thread_1.start()
-        #thread_2.start()
-        thread_3.start()
 
+    thread_1.start()
+            #thread_2.start()
+            #thread_3.start()
+    thread_4.start()
 except:  
     print("Error: Unable to start thread.")
 while 1: 
-    pass  
+    pass

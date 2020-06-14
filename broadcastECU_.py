@@ -159,17 +159,13 @@ def sendData(id, ciphertext):
     bus = can.interface.Bus(channel=channel, bustype=bustype)
     message = can.Message(arbitration_id=id, data=ciphertext, is_extended_id=False)
     
-    IDs = ["0x2aa"]
-
-    #print(hex(message.arbitration_id) in IDs)
-    if(hex(message.arbitration_id) in IDs):
-        #Should be the periodic verified anchor number instead of the 303030303030
-        if (message.data.hex() == "3030303030303030"):
-            print("Merkle tree root hash, sending: %s",mt_sending.get_merkle_root())
-            mt_sending.reset_tree()
-        else:
-            mt_sending.add_leaf(message.data.hex())
-            mt_sending.make_tree()
+    if (hex(message.arbitration_id) == "0x2ab"):
+        mt_sending.make_tree()
+        mt_s = mt_sending.get_merkle_root()
+        mt_sending.reset_tree()
+        print("Merkle tree root hash, sending: %s",mt_s)
+    else:
+        mt_sending.add_leaf(message.data.hex())
 
     bus.send(message)
 
@@ -189,20 +185,23 @@ def periodicData(id, current_anchor_random_number):
 
 def randomData(id, current_anchor_random_number):
     """
-        Sends periodic random data frames through the CAN bus.
+        Generate periodic random data frames through the CAN bus, calls the sending function to send data frames created through the bus.
         - ** id ** *bytes* : ID key identifying the message in the bus.
         - ** current_anchor_random_number ** *bit_string* : current anchor random number that was being broadcasted through the bus
     """
     while(True):
+        #Not the best idea to implement the separation between data. 
+        #Should be used with the periodic broadcast
         initial_data = "00000000"
-        sendData(id,bytes(initial_data.encode()))
+        sendData(0x2ab,bytes(initial_data.encode()))
+
         for i in range(0,10):
             can_id_counter = get_random_bytes(1)
             can_id_key = b'thisisjustakeythisisjustakeeyID1'
 
             length_data = random.randint(0,8)
             random_data = get_random_bytes(length_data)
-            print("Unencrypted message from broadcast ECU: %s", random_data.hex())
+            #print("Unencrypted message from broadcast ECU: %s", random_data.hex())
             ciphertext = encryption(current_anchor_random_number, random_data, can_id_key, can_id_counter)
             #print("Encrypted message from broadcast ECU: %s", ciphertext.hex())
             sendData(id, ciphertext)
@@ -212,30 +211,24 @@ def periodicBroadcast(id, current_anchor_random_number):
     while(True):
         periodicData(id, current_anchor_random_number)
     
-def receiveData(id, current_anchor_random_number):
-    """
-        Receives all the data that is going through the bus.ID is used to distinguish what messages we want to pull out.
-        - ** id ** *bytes* : ID key identifying the message pulling from the bus.
-    """
-    print("Im receiving data")
+def merkleMonitor(id):
     bus = can.interface.Bus(channel=channel, bustype=bustype)
+    mt = MerkleTools()
+    for message in bus:
+        #If the broadcast number is detected, calculate all the root hashes.
+        if(hex(message.arbitration_id) == "0x3ab"):
+            mt.make_tree()
+            mt_r = mt.get_merkle_root()
+            mt.reset_tree()
+            msg = can.Message(arbitration_id=0x2ac, data=bytes(str(mt_r).encode()[:16]), is_extended_id=False)
+            bus.send(msg)
+            print("Merkle tree root hash, receiving from %s: %s" %(hex(id), mt_r))
 
-    IDs = ["0x3aa"]
-    can_id_counter = get_random_bytes(1)
-    can_id_key = b'thisisjustakeythisisjustakeeyID1'
-
-    for message in bus: 
-        #Should be the periodic verified anchor number instead of the 303030303030
-        if(hex(message.arbitration_id) in IDs):  
-            if(message.data.hex() == "3030303030303030"):
-                #print("Merkle tree root hash, receiving: %s",mt_receiving.get_merkle_root())
-                mt_receiving.reset_tree()
-            else:
-                mt_receiving.add_leaf(message.data.hex())
-                mt_receiving.make_tree()  
-                message = decryption(current_anchor_random_number, message.data,can_id_key, can_id_counter)
-                #print("Decrypted message from ECU_: %s", message)
-    return 0
+        elif(hex(message.arbitration_id) == hex(id)):
+            mt.add_leaf(message.data.hex())
+        
+        
+            
 
 try:
         current_anchor_random_number = get_random_bytes(8)
@@ -243,13 +236,17 @@ try:
         IDa = 0x2aa
         IDb = 0x2ab
 
+        IDc = 0x3aa
+
         thread_1 = threading.Thread(target=randomData, args=(IDa, current_anchor_random_number,))
         #thread_2 = threading.Thread(target=periodicBroadcast, args=(IDb, current_anchor_random_number,))
-        thread_3 = threading.Thread(target=receiveData, args=(IDa, current_anchor_random_number,))
-        
+        #thread_3 = threading.Thread(target=receiveData, args=(IDa, current_anchor_random_number,))
+        thread_4 = threading.Thread(target=merkleMonitor, args=(IDc,))
+
         thread_1.start()
         #thread_2.start()
-        thread_3.start()
+        #thread_3.start()
+        thread_4.start()
 
 except:  
     print("Error: Unable to start thread.")
