@@ -150,7 +150,7 @@ def verifyHanchor(current_anchor_random_number, can_id_key, can_id_counter, nonc
 
     return message
 
-def sendData(id, ciphertext):
+def sendData(id, ciphertext, singleFrame):
     """
         Sends single data frames through the CAN bus.
         - ** id ** *bytes* : ID key identifying the message in the bus.
@@ -158,16 +158,19 @@ def sendData(id, ciphertext):
     """
     bus = can.interface.Bus(channel=channel, bustype=bustype)
     message = can.Message(arbitration_id=id, data=ciphertext, is_extended_id=False)
-    
-    if (hex(message.arbitration_id) == "0x2ab"):
-        mt_sending.make_tree()
-        mt_s = mt_sending.get_merkle_root()
-        mt_sending.reset_tree()
-        print("Merkle tree root hash, sending: %s",mt_s)
+    if (singleFrame):
+        bus.send(message)
     else:
-        mt_sending.add_leaf(message.data.hex())
-
-    bus.send(message)
+        if (hex(message.arbitration_id) == "0x2ab" and mt_sending.get_leaf_count != 0):
+            mt_sending.make_tree()
+            mt_s = mt_sending.get_merkle_root()
+            mt_sending.reset_tree()
+            msg = can.Message(arbitration_id=0x2ac, data = bytes(str(mt_s).encode())[:16])
+            bus.send(msg)
+            print("Merkle tree root hash, sending: %s",mt_s)
+        else:
+            mt_sending.add_leaf(message.data.hex())
+        bus.send(message)
 
 def periodicData(id, current_anchor_random_number):
     """
@@ -193,7 +196,7 @@ def randomData(id, current_anchor_random_number):
         #Not the best idea to implement the separation between data. 
         #Should be used with the periodic broadcast
         initial_data = "00000000"
-        sendData(0x2ab,bytes(initial_data.encode()))
+        sendData(0x2ab,bytes(initial_data.encode()),False)
 
         for i in range(0,10):
             can_id_counter = get_random_bytes(1)
@@ -204,7 +207,7 @@ def randomData(id, current_anchor_random_number):
             #print("Unencrypted message from broadcast ECU: %s", random_data.hex())
             ciphertext = encryption(current_anchor_random_number, random_data, can_id_key, can_id_counter)
             #print("Encrypted message from broadcast ECU: %s", ciphertext.hex())
-            sendData(id, ciphertext)
+            sendData(id, ciphertext,False)
             time.sleep(1)
 
 def periodicBroadcast(id, current_anchor_random_number):
@@ -220,10 +223,7 @@ def merkleMonitor(id):
             mt.make_tree()
             mt_r = mt.get_merkle_root()
             mt.reset_tree()
-            msg = can.Message(arbitration_id=0x2ac, data=bytes(str(mt_r).encode()[:16]), is_extended_id=False)
-            bus.send(msg)
             print("Merkle tree root hash, receiving from %s: %s" %(hex(id), mt_r))
-
         elif(hex(message.arbitration_id) == hex(id)):
             mt.add_leaf(message.data.hex())
         
